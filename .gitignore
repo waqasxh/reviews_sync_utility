@@ -9,6 +9,11 @@ appsettings.*.json
 *.db
 *.sqlite
 
+# ReviewSync runtime output (per-client cache, exported review JSON, rolling logs)
+ReviewSync/**/data/
+ReviewSync/**/output/
+ReviewSync/**/logs/
+
 # --- Secrets / env ---
 .env
 .env.*

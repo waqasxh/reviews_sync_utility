@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="ReviewSync.Cli/ReviewSync.Cli.csproj" />
+  <Project Path="ReviewSync.Core.Tests/ReviewSync.Core.Tests.csproj" />
+  <Project Path="ReviewSync.Core/ReviewSync.Core.csproj" />
+  <Project Path="ReviewSync.Storage/ReviewSync.Storage.csproj" />
+</Solution>

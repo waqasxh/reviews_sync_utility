@@ -11,6 +11,52 @@ The two components never talk to each other directly — they're decoupled by a 
 
 ---
 
+## Build Status (session continuity)
+
+> This file is read automatically at the start of every Claude Code session in this
+> directory, so this section is how work picks up across sessions without re-deriving
+> context. Keep it current as work progresses — update it in the same turn you finish a
+> milestone, not as an afterthought.
+
+**Last updated:** 2026-08-30
+
+### Console app (`/ReviewSync`) — in progress
+
+- **Done:** Solution scaffolded (`ReviewSync.Core`, `ReviewSync.Storage`, `ReviewSync.Cli`,
+  `ReviewSync.Core.Tests`), targeting net10.0. Builds clean, 8/8 unit tests passing.
+- **Done:** Tier 1 (free) fully implemented — `GooglePlacesFetcher` + `GooglePlacesClient`
+  hit the legacy Places `findplacefromtext` + `details` endpoints, capped at 5 reviews.
+  `GooglePlacesReviewNormalizer` maps raw Google JSON to the unified schema and is unit
+  tested (review-id hash stability, unix-time → `published_at`, blank-author fallback, etc.).
+- **Done:** `IReviewFetcher` / `IPlaceResolver` abstractions in `ReviewSync.Core` are the
+  seam for adding Outscraper later — no changes needed elsewhere when that lands.
+- **Done:** `ClientStore` (`ReviewSync.Storage`) is a flat JSON list keyed by slug —
+  multi-tenant is the default shape today, not a future migration.
+- **Deferred (explicit decision):** Outscraper / Tier 2 (`--tier paid`). The CLI recognizes
+  the flag and rejects it with a clear "not implemented yet" message rather than silently
+  no-op'ing. See `ReviewSync/README.md` → "Adding Outscraper later" for the exact seam.
+- **Not started:** WordPress plugin (`/client-reviews`) — nothing scaffolded yet.
+- **CLI commands implemented:** `fetch`, `resolve`, `list-clients` (hand-rolled `--key value`
+  arg parsing in `ArgReader.cs` — `System.CommandLine`'s current preview API was too
+  unstable to depend on, so the spec's suggested library was swapped out deliberately).
+- **Discovery worth keeping:** Google's legacy Place Details API returns an exact unix
+  timestamp (`time`) per review, not just a relative-time string — so `published_at` is
+  always exact for this source; the schema's "best-effort relative-time parsing" fallback
+  is only needed for a source that doesn't supply an epoch value.
+- **Not yet run against a real API key** — smoke-tested the CLI's error paths (missing key,
+  `--tier paid` rejection, empty `list-clients`) but no live Google Places call has been
+  made. Waqas needs to supply a `GOOGLE_PLACES_API_KEY` to validate the happy path.
+
+### Next steps (pick up here)
+
+1. Get a real Google Places API key from Waqas, validate `resolve` → `fetch` end to end
+   against a real business, confirm the exported JSON matches the schema.
+2. Scaffold the WordPress plugin (`/client-reviews`) per the Part 2 spec below.
+3. When ready for Tier 2, implement `OutscraperFetcher : IReviewFetcher` per the seam
+   described in `ReviewSync/README.md`.
+
+---
+
 ## Architecture
 
 ```
