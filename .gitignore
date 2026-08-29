@@ -1,0 +1,26 @@
+# --- .NET / C# (ReviewSync console app) ---
+bin/
+obj/
+*.user
+*.suo
+.vs/
+appsettings.*.json
+!appsettings.json
+*.db
+*.sqlite
+
+# --- Secrets / env ---
+.env
+.env.*
+*.key
+
+# --- PHP / WordPress plugin ---
+vendor/
+node_modules/
+*.log
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

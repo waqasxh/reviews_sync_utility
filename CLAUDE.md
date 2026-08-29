@@ -1,0 +1,200 @@
+# Review Sync System — Project Spec
+
+## Overview
+
+A two-part system for pulling Google Business reviews for client websites and displaying them on WordPress:
+
+1. **Review Fetcher (Console App)** — a C#/.NET console application that takes a business name (or Google Place ID), pulls reviews from either the Google Places API (free tier, 5 reviews) or Outscraper (paid tier, unlimited/more reviews), and exports a normalized JSON file.
+2. **WordPress Plugin** — a PHP plugin that ingests that JSON file, stores reviews in a custom database table, and renders them via shortcode/block with an admin UI for management.
+
+The two components never talk to each other directly — they're decoupled by a JSON file contract. This keeps the console app hosting-agnostic and lets the plugin be dropped onto any client's WordPress site.
+
+---
+
+## Architecture
+
+```
+[Console App] --pulls from--> [Google Places API | Outscraper API]
+      |
+      v
+[reviews-{business-slug}-{timestamp}.json]
+      |
+      v  (uploaded via WP admin, or dropped in a watched folder / REST endpoint)
+[WordPress Plugin] --parses & upserts--> [wp_client_reviews table]
+      |
+      v
+[Admin UI: list/edit/hide/feature reviews] --renders--> [Shortcode / Gutenberg block on frontend]
+```
+
+Two data sources feed the same JSON schema. The plugin doesn't need to know or care which source a review came from — it just ingests conforming JSON. This means "upgrade a client to more reviews" is purely a console-app-side decision (call Outscraper instead of Places API); the plugin's ingestion logic never changes.
+
+---
+
+## Part 1: Console Application (C#/.NET)
+
+### Responsibilities
+- Accept a business name and location (or a stored Google Place ID) as input.
+- Fetch reviews from one of two sources, selectable via a flag or config:
+  - **Tier 1 (free):** Google Places API — `Place Details` endpoint, `fields=reviews,rating,user_ratings_total`. Returns max 5 reviews, Google-selected (not sortable/controllable).
+  - **Tier 2 (paid):** Outscraper Google Maps Reviews API — returns configurable volume (e.g., 50, 100, all), with pagination/async job handling since Outscraper's API is often async (submit job → poll/webhook for results).
+- Normalize both sources into one unified JSON schema (see below) so downstream consumption is identical regardless of source.
+- Cache/store the resolved Place ID per business so re-runs don't require re-resolving it every time (store in a local SQLite DB or a simple `clients.json` lookup file, keyed by business slug).
+- Write output to a JSON file named predictably, e.g. `reviews-{business-slug}-{yyyyMMdd-HHmmss}.json`.
+- Log what was fetched (source, review count, timestamp, any API errors) to console and a rolling log file.
+- Support a `--dry-run` mode that resolves the Place ID and shows what would be fetched without spending API quota.
+
+### CLI shape (suggested)
+```
+reviewsync fetch --business "Shique London" --location "West Kensington, London" --tier free
+reviewsync fetch --business "Shique London" --tier paid --limit 100
+reviewsync resolve --business "Shique London"   # just resolves & caches Place ID
+reviewsync list-clients                          # shows cached business -> place ID mappings
+```
+
+### Unified JSON schema (output contract)
+
+```json
+{
+  "schema_version": "1.0",
+  "business": {
+    "name": "Shique London",
+    "place_id": "ChIJ...",
+    "google_rating": 4.8,
+    "google_review_count": 142
+  },
+  "source": "google_places | outscraper",
+  "fetched_at": "2026-08-30T12:00:00Z",
+  "reviews": [
+    {
+      "review_id": "unique-stable-id",
+      "author_name": "Jane D.",
+      "author_photo_url": "https://...",
+      "rating": 5,
+      "text": "Great service...",
+      "relative_time": "2 weeks ago",
+      "published_at": "2026-08-14T00:00:00Z",
+      "language": "en",
+      "source_url": "https://www.google.com/maps/reviews/..."
+    }
+  ]
+}
+```
+
+Notes for Claude Code:
+- `review_id` needs to be **stable across re-fetches** so the plugin can upsert instead of duplicating. Google Places API doesn't give a clean unique ID per review — you'll likely need to derive one (hash of author_name + published_at + text) as a fallback when the source doesn't supply one. Outscraper typically supplies a more stable review ID — use it directly when present.
+- `published_at` should be normalized to ISO 8601 even though Google Places API mostly gives relative time strings — do your best-effort parse of `relative_time`, and if you can't get an exact date, store null and keep `relative_time` for display fallback.
+- Keep the schema additive/versioned (`schema_version`) so the plugin can handle older exports gracefully as the schema evolves.
+
+### Config & secrets
+- Google Places API key and Outscraper API key should be read from environment variables or a local `appsettings.json` / `.env` — **never committed to source control**.
+- Since this will handle multiple clients, structure config as a per-client override on top of global defaults (e.g. some clients might need a specific `location` bias to avoid Place ID collisions with businesses of the same name elsewhere).
+
+### Suggested project structure
+```
+/ReviewSync
+  /ReviewSync.Cli        -- console entry point, command parsing
+  /ReviewSync.Core        -- fetchers (GooglePlacesFetcher, OutscraperFetcher), normalization, models
+  /ReviewSync.Storage     -- local client/place-id cache
+  appsettings.json
+  README.md
+```
+
+Ask Claude Code to:
+1. Scaffold the solution with the structure above.
+2. Implement `IReviewFetcher` interface with `GooglePlacesFetcher` and `OutscraperFetcher` implementations.
+3. Implement the normalizer that maps each source's raw response to the unified schema.
+4. Implement the CLI commands listed above using a lightweight arg-parsing library (e.g. `System.CommandLine`).
+5. Handle Outscraper's async job pattern properly (submit → poll with backoff, or webhook receiver if you want it fully async) rather than assuming a synchronous response.
+6. Write basic unit tests for the normalization logic specifically (that's the part most likely to break silently).
+
+---
+
+## Part 2: WordPress Plugin (PHP)
+
+### Responsibilities
+- Provide an admin screen to **upload a JSON export** (file upload field — no need for a watched folder unless you want to add SFTP/REST ingestion later).
+- Parse the JSON, validate it against the expected schema, and **upsert** reviews into a custom table (insert new, update existing by `review_id`, never duplicate).
+- Store reviews per-client if this plugin will ever be installed on a multi-site/agency dashboard, but for now assume **one site = one business**, so no client_id column is required unless you want to future-proof it (recommend adding a `business_place_id` column anyway even in single-tenant mode, so a future multi-tenant upgrade doesn't require a schema migration).
+- Provide an admin UI (list table using WP's `WP_List_Table` class) to:
+  - View all imported reviews
+  - Toggle a review's visibility (show/hide on frontend)
+  - Mark a review as "featured" (for pinning top testimonials)
+  - Manually delete a review
+  - See import history (when was the last JSON imported, how many reviews came in, from which source)
+- Render reviews on the frontend via:
+  - A shortcode: `[client_reviews limit="5" min_rating="4" layout="grid"]`
+  - A Gutenberg block wrapping the same shortcode logic, with block editor controls for limit/rating filter/layout
+- Include basic schema.org markup (`Review` / `AggregateRating` JSON-LD) in the rendered output so Google can pick up star ratings in search snippets — this matters for the client SEO work this feeds into.
+
+### Suggested database table
+
+```sql
+CREATE TABLE {$wpdb->prefix}client_reviews (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  review_id VARCHAR(191) NOT NULL,
+  business_place_id VARCHAR(191) NULL,
+  author_name VARCHAR(255),
+  author_photo_url TEXT,
+  rating TINYINT UNSIGNED,
+  review_text TEXT,
+  relative_time VARCHAR(100),
+  published_at DATETIME NULL,
+  language VARCHAR(10),
+  source_url TEXT,
+  source VARCHAR(50),
+  is_visible TINYINT(1) DEFAULT 1,
+  is_featured TINYINT(1) DEFAULT 0,
+  imported_at DATETIME,
+  UNIQUE KEY review_id_unique (review_id)
+) {$charset_collate};
+```
+
+### Suggested plugin structure
+```
+/client-reviews
+  client-reviews.php          -- plugin bootstrap, activation hook (create table)
+  /includes
+    class-importer.php        -- JSON parsing + validation + upsert logic
+    class-admin-list-table.php -- WP_List_Table implementation
+    class-admin-page.php      -- upload form, import history screen
+    class-shortcode.php       -- [client_reviews] rendering
+    class-block.php           -- Gutenberg block registration
+    class-schema-markup.php   -- JSON-LD output
+  /assets
+    admin.css / admin.js
+    frontend.css
+  /templates
+    review-grid.php
+    review-list.php
+```
+
+Ask Claude Code to:
+1. Scaffold the plugin skeleton with a proper activation hook that creates the table via `dbDelta()`.
+2. Implement the JSON importer with:
+   - Schema version check
+   - Validation (reject malformed files with a clear admin-facing error, don't partially import)
+   - Upsert logic keyed on `review_id`
+   - An import log (could just be a WP option storing the last N import events, or a small `client_reviews_import_log` table if you want full history)
+3. Build the admin list table with visibility/featured toggles (AJAX-driven, no page reload) and manual delete.
+4. Build the shortcode with `limit`, `min_rating`, and `layout` (`grid`/`list`/`carousel`) attributes.
+5. Build the Gutenberg block as a thin wrapper exposing the same attributes via block controls (use `render_callback` pointing at the same rendering function the shortcode uses — don't duplicate rendering logic).
+6. Add the `Review`/`AggregateRating` JSON-LD schema block output alongside the visible markup.
+7. Sanitize/escape everything on output (`esc_html`, `esc_url`, `wp_kses_post` for review text) — this is user-generated content from a public API, treat it as untrusted input.
+
+---
+
+## Tiering / upgrade path (business logic, not code)
+
+- Every client starts on **Tier 1**: console app hits Google Places API, exports 5 reviews, JSON gets uploaded to their WordPress plugin.
+- If a client pays for more reviews, you re-run the console app in **Tier 2** mode against Outscraper for the same business, producing a JSON with more reviews (and a `"source": "outscraper"` tag).
+- Uploading the new JSON to the same plugin **upserts** — existing 5 reviews stay (matched by `review_id` if Outscraper happens to return overlapping ones) and new ones get added. No manual cleanup needed on the WordPress side.
+- This means the plugin's importer must be source-agnostic and idempotent — re-importing the same file twice, or importing Tier 1 then Tier 2 data, should never create duplicates or corrupt state.
+
+---
+
+## Open decisions to flag back to the user (Waqas) before/while building
+
+1. **JSON delivery mechanism**: manual upload via admin screen (simplest, recommended to start) vs. a REST endpoint the console app could push to directly (more automation, but requires auth/API-key handling on the WordPress side). Start with manual upload; design the importer as a standalone function so a REST endpoint can call it later without rewriting anything.
+2. **Multi-tenant future**: if this plugin will eventually live on an agency dashboard managing many clients from one place, the schema/architecture should account for a `business_place_id`/client identifier now even though today it's one plugin install per client site.
+3. **Outscraper's async pattern**: confirm expected turnaround (their reviews endpoint is often a submit-then-poll job, not instant) so the console app's UX (progress indicator, retry logic) accounts for that instead of assuming a fast synchronous call.
+4. **Review moderation**: does Waqas want new imports to default to visible, or default to hidden pending manual approval? (Relevant for keeping only positive/high-rating reviews live without editing text — never fabricate or alter review content, only filter which are shown.)
