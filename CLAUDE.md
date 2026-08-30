@@ -35,7 +35,6 @@ The two components never talk to each other directly — they're decoupled by a 
 - **Deferred (explicit decision):** Outscraper / Tier 2 (`--tier paid`). The CLI recognizes
   the flag and rejects it with a clear "not implemented yet" message rather than silently
   no-op'ing. See `ReviewSync/README.md` → "Adding Outscraper later" for the exact seam.
-- **Not started:** WordPress plugin (`/client-reviews`) — nothing scaffolded yet.
 - **CLI commands implemented:** `fetch`, `resolve`, `list-clients` (hand-rolled `--key value`
   arg parsing in `ArgReader.cs` — `System.CommandLine`'s current preview API was too
   unstable to depend on, so the spec's suggested library was swapped out deliberately).
@@ -43,15 +42,48 @@ The two components never talk to each other directly — they're decoupled by a 
   timestamp (`time`) per review, not just a relative-time string — so `published_at` is
   always exact for this source; the schema's "best-effort relative-time parsing" fallback
   is only needed for a source that doesn't supply an epoch value.
-- **Not yet run against a real API key** — smoke-tested the CLI's error paths (missing key,
-  `--tier paid` rejection, empty `list-clients`) but no live Google Places call has been
-  made. Waqas needs to supply a `GOOGLE_PLACES_API_KEY` to validate the happy path.
+- **Validated against a real API key** — `fetch --business "Logan Kingsley Solicitors"`
+  ran end to end against the live Google Places API and produced
+  `reviews-logan-kingsley-solicitors-20260830-052009.json`: 5 reviews, correct
+  `place_id`/`google_rating`/`google_review_count`, exact `published_at` timestamps, stable
+  `gp_`-prefixed review IDs, non-ASCII author names round-tripped correctly. Happy path
+  confirmed working; no changes needed on the console-app side for now.
+
+### WordPress plugin (`/client-reviews`) — scaffolded, untested against a live WP install
+
+- **Done:** Activation hook creates `wp_client_reviews` via `dbDelta()`, including
+  `business_place_id` even in today's single-tenant usage per the spec's multi-tenant
+  future-proofing note.
+- **Done:** `Client_Reviews_Importer::import_from_file()` — schema_version major-version
+  check, full validation before any DB write (no partial imports), upsert keyed on
+  `review_id`. Re-imports never overwrite an admin's existing `is_visible`/`is_featured`
+  choice on a review that already exists; only new rows get the default visibility.
+- **Done:** Admin UI — All Reviews (`WP_List_Table`, sortable, AJAX visibility/featured
+  toggles, per-row + bulk delete), Import (upload form + history from the
+  `client_reviews_import_log` option), Settings (default visibility for new imports).
+- **Done:** `[client_reviews limit min_rating layout]` shortcode and the
+  `client-reviews/reviews` Gutenberg block share one render function
+  (`Client_Reviews_Shortcode::render()`); the block previews live via `ServerSideRender`.
+  `Client_Reviews_Schema_Markup` emits Review/AggregateRating JSON-LD alongside the markup.
+- **Resolved open decision (moderation default):** made it a Settings-page choice
+  (`client_reviews_default_visibility` option, defaults to "visible") instead of hardcoding
+  either way — applies only to newly inserted reviews, never touches existing ones.
+- **Known gap:** `layout="carousel"` currently renders as grid with a `data-layout`
+  attribute; no carousel JS is bundled yet.
+- **Not yet tested against a real WordPress install** — no local WP environment was set up
+  this session, so activation/import/rendering have been reviewed by eye (no `php -l`
+  available in this shell either) but never actually run. Do that before considering this
+  plugin done.
 
 ### Next steps (pick up here)
 
-1. Get a real Google Places API key from Waqas, validate `resolve` → `fetch` end to end
-   against a real business, confirm the exported JSON matches the schema.
-2. Scaffold the WordPress plugin (`/client-reviews`) per the Part 2 spec below.
+1. ~~Get a real Google Places API key, validate `resolve` → `fetch` end to end.~~ Done
+   2026-08-30 — see above.
+2. ~~Scaffold the WordPress plugin (`/client-reviews`) per the Part 2 spec below.~~ Done
+   2026-08-30 — see above; **still needs a real WordPress smoke test** (activate plugin,
+   import the Logan Kingsley Solicitors JSON already sitting in
+   `ReviewSync/ReviewSync.Cli/output/`, confirm shortcode/block render, confirm JSON-LD
+   validates).
 3. When ready for Tier 2, implement `OutscraperFetcher : IReviewFetcher` per the seam
    described in `ReviewSync/README.md`.
 
@@ -243,4 +275,4 @@ Ask Claude Code to:
 1. **JSON delivery mechanism**: manual upload via admin screen (simplest, recommended to start) vs. a REST endpoint the console app could push to directly (more automation, but requires auth/API-key handling on the WordPress side). Start with manual upload; design the importer as a standalone function so a REST endpoint can call it later without rewriting anything.
 2. **Multi-tenant future**: if this plugin will eventually live on an agency dashboard managing many clients from one place, the schema/architecture should account for a `business_place_id`/client identifier now even though today it's one plugin install per client site.
 3. **Outscraper's async pattern**: confirm expected turnaround (their reviews endpoint is often a submit-then-poll job, not instant) so the console app's UX (progress indicator, retry logic) accounts for that instead of assuming a fast synchronous call.
-4. **Review moderation**: does Waqas want new imports to default to visible, or default to hidden pending manual approval? (Relevant for keeping only positive/high-rating reviews live without editing text — never fabricate or alter review content, only filter which are shown.)
+4. **Review moderation** — *resolved 2026-08-30*: rather than picking one default, this is now a Client Reviews > Settings toggle (`client_reviews_default_visibility`, defaults to "visible") that only affects newly inserted reviews. Waqas can flip it to "hidden" per-site if he wants to review new imports before they go live; either way, filtering is by visibility flag only — review text is never edited or fabricated.
