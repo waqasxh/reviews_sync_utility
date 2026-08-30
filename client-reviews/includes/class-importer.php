@@ -53,6 +53,8 @@ class Client_Reviews_Importer {
 			}
 		}
 
+		self::store_business_info( $data['business'] );
+
 		$summary = array(
 			'business_name' => $data['business']['name'],
 			'place_id'      => $placeId,
@@ -65,6 +67,26 @@ class Client_Reviews_Importer {
 		self::log_import( $summary );
 
 		return $summary;
+	}
+
+	/**
+	 * Stores the export's top-level `business` block (the real Google aggregate --
+	 * name, place_id, google_rating, google_review_count) as options, separate from
+	 * the individual review rows. The frontend rating summary and the JSON-LD
+	 * AggregateRating both read from here, since the real business total (e.g. 4.9
+	 * from 180 reviews) is never the same as an average computed from whatever small
+	 * sample of individual reviews happens to be imported (5 on the free Places tier).
+	 */
+	private static function store_business_info( $business ) {
+		update_option( 'client_reviews_business_name', sanitize_text_field( $business['name'] ) );
+		update_option( 'client_reviews_business_place_id', sanitize_text_field( $business['place_id'] ) );
+
+		if ( isset( $business['google_rating'] ) && is_numeric( $business['google_rating'] ) ) {
+			update_option( 'client_reviews_google_rating', (float) $business['google_rating'] );
+		}
+		if ( isset( $business['google_review_count'] ) && is_numeric( $business['google_review_count'] ) ) {
+			update_option( 'client_reviews_google_review_count', (int) $business['google_review_count'] );
+		}
 	}
 
 	/**

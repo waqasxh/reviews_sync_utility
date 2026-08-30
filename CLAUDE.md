@@ -49,7 +49,7 @@ The two components never talk to each other directly — they're decoupled by a 
   `gp_`-prefixed review IDs, non-ASCII author names round-tripped correctly. Happy path
   confirmed working; no changes needed on the console-app side for now.
 
-### WordPress plugin (`/client-reviews`) — scaffolded, untested against a live WP install
+### WordPress plugin (`/client-reviews`) — live on the Logan Kingsley Solicitors site
 
 - **Done:** Activation hook creates `wp_client_reviews` via `dbDelta()`, including
   `business_place_id` even in today's single-tenant usage per the spec's multi-tenant
@@ -58,34 +58,73 @@ The two components never talk to each other directly — they're decoupled by a 
   check, full validation before any DB write (no partial imports), upsert keyed on
   `review_id`. Re-imports never overwrite an admin's existing `is_visible`/`is_featured`
   choice on a review that already exists; only new rows get the default visibility.
+- **Done 2026-08-30:** Importer also stores the export's top-level `business` block
+  (`google_rating`, `google_review_count`, `place_id`, `name`) as options
+  (`client_reviews_google_rating`, `client_reviews_google_review_count`,
+  `client_reviews_business_place_id`, `client_reviews_business_name`) — needed because
+  the real business total (Logan Kingsley: 4.9 average across 180 actual Google reviews)
+  is never the same as an average computed from the small local sample the free Places
+  tier returns (5 reviews, all coincidentally 5-star, which made an early homepage draft
+  wrongly claim "Rated 5.0 out of 5 based on 5 reviews").
+- **Done 2026-08-30:** New `[client_reviews_rating]` shortcode
+  (`Client_Reviews_Shortcode::render_rating_summary()`) renders that real aggregate —
+  "Rated 4.9 out of 5 based on 180 Google reviews", with the review count linking to
+  the business's Google reviews page (`link="no"` attribute to disable). `Client_Reviews_
+  Schema_Markup`'s JSON-LD now prefers the same stored options for `aggregateRating`
+  over the local-sample computation too, for the same accuracy reason.
+- **Done 2026-08-30:** Review card text (both grid and list templates) is now truncated
+  to 150 characters on a word boundary (`Client_Reviews_Shortcode::excerpt()`, a class
+  method rather than a bare template function specifically so it's safe if the shortcode
+  ever renders twice on one page) with a "Read full review on Google" link to the
+  review's real `source_url` — full-length reviews made cards inconsistent height, and
+  the Google link lets a visitor verify the review is genuine and unedited.
 - **Done:** Admin UI — All Reviews (`WP_List_Table`, sortable, AJAX visibility/featured
   toggles, per-row + bulk delete), Import (upload form + history from the
   `client_reviews_import_log` option), Settings (default visibility for new imports).
 - **Done:** `[client_reviews limit min_rating layout]` shortcode and the
   `client-reviews/reviews` Gutenberg block share one render function
   (`Client_Reviews_Shortcode::render()`); the block previews live via `ServerSideRender`.
-  `Client_Reviews_Schema_Markup` emits Review/AggregateRating JSON-LD alongside the markup.
 - **Resolved open decision (moderation default):** made it a Settings-page choice
   (`client_reviews_default_visibility` option, defaults to "visible") instead of hardcoding
   either way — applies only to newly inserted reviews, never touches existing ones.
 - **Known gap:** `layout="carousel"` currently renders as grid with a `data-layout`
   attribute; no carousel JS is bundled yet.
-- **Not yet tested against a real WordPress install** — no local WP environment was set up
-  this session, so activation/import/rendering have been reviewed by eye (no `php -l`
-  available in this shell either) but never actually run. Do that before considering this
-  plugin done.
+- **Known gap, pre-existing, not caused by today's changes:** `assets/frontend.css` is
+  never actually enqueued anywhere in the plugin (confirmed via grep 2026-08-30) — it's
+  a dead file. Not an issue on the Logan Kingsley site today since that page provides its
+  own scoped `<style>` block directly in the Elementor page content, but a future
+  install on a site that doesn't do that would render completely unstyled. Worth wiring
+  up `wp_enqueue_style` on `wp_enqueue_scripts` whenever the shortcode/block is actually
+  present on a page, if this plugin gets used on another client site.
+- **Deployed 2026-08-30**: installed+active on the actual Logan Kingsley Solicitors
+  WordPress site (GoDaddy staging), not just reviewed by eye — activation, import (5 real
+  Google reviews imported via `Client_Reviews_Importer::import_from_file()` run through
+  `wp eval`), and the `[client_reviews]`/`[client_reviews_rating]` shortcode rendering
+  were all exercised for real and verified via cache-busted curl (real reviewer names,
+  star ratings, truncated text, "Read full review on Google" links, and the JSON-LD
+  `aggregateRating` all confirmed correct: `{"ratingValue":4.9,"reviewCount":180}`). Files
+  deployed straight over the live plugin directory
+  (`wp-content/plugins/client-reviews/`), `php -l` checked on the server first for each
+  changed file. See the Logan Kingsley project's own `CLAUDE.md` (in the LKS repo) for
+  the page-side implementation details (the navy "Testimonials Section" on Home).
 
 ### Next steps (pick up here)
 
 1. ~~Get a real Google Places API key, validate `resolve` → `fetch` end to end.~~ Done
    2026-08-30 — see above.
 2. ~~Scaffold the WordPress plugin (`/client-reviews`) per the Part 2 spec below.~~ Done
-   2026-08-30 — see above; **still needs a real WordPress smoke test** (activate plugin,
-   import the Logan Kingsley Solicitors JSON already sitting in
-   `ReviewSync/ReviewSync.Cli/output/`, confirm shortcode/block render, confirm JSON-LD
-   validates).
-3. When ready for Tier 2, implement `OutscraperFetcher : IReviewFetcher` per the seam
-   described in `ReviewSync/README.md`.
+   2026-08-30 — see above.
+3. ~~Real WordPress smoke test (activate plugin, import the Logan Kingsley Solicitors
+   JSON, confirm shortcode/block render, confirm JSON-LD validates).~~ Done 2026-08-30 —
+   see "Deployed 2026-08-30" above. Live on the actual client site now, not just a test
+   install.
+4. When ready for Tier 2, implement `OutscraperFetcher : IReviewFetcher` per the seam
+   described in `ReviewSync/README.md` — the free tier's 5-review cap is real (`total: 5`
+   confirmed on every fetch so far), so this becomes relevant as soon as the client wants
+   more than 5 individual reviews shown (the real 4.9/180 aggregate already displays
+   correctly regardless, since that comes from the business block, not the review count).
+5. Fix the dead `assets/frontend.css` enqueue gap noted above, if/when this plugin goes
+   onto a second site that can't provide its own page-level `<style>` block.
 
 ---
 

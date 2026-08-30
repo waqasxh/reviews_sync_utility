@@ -50,8 +50,22 @@ class Client_Reviews_Schema_Markup {
 			$review_ld[] = $item;
 		}
 
+		// Prefer the real Google business totals (e.g. 4.9 from 180 reviews) over an
+		// average computed from whatever small local sample got imported (5 reviews on
+		// the free Places tier) -- the sample average would understate/misrepresent the
+		// business's actual aggregate and could read as inaccurate to Google.
+		$stored_rating = get_option( 'client_reviews_google_rating' );
+		$stored_count  = get_option( 'client_reviews_google_review_count' );
+
 		$count   = count( $reviews );
 		$average = $count > 0 ? round( $rating_sum / $count, 1 ) : 0;
+
+		if ( ! empty( $stored_rating ) ) {
+			$average = (float) $stored_rating;
+		}
+		if ( ! empty( $stored_count ) ) {
+			$count = (int) $stored_count;
+		}
 
 		$json_ld = array(
 			'@context'        => 'https://schema.org',
